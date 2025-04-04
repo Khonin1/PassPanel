@@ -50,7 +50,7 @@ while True:
                 save_to_csv(hex_data)
                 known_data.add(hex_data)  # Добавляем в список известных
 
-        time.sleep(0.1)  # Немного ждем, чтобы не грузить процессор
+        time.sleep(0.1)  # Немного ждем, чтобы не грузить процессорdc
 
     except serial.SerialException as e:
         print(f"❌ Ошибка работы с последовательным портом: {e}")
