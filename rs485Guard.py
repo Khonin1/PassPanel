@@ -60,3 +60,4 @@ while True:
         GPIO.cleanup()  # Освобождаем GPIO
         ser.close()
         break  # Выход из цикла, если нажали Ctrl+C
+    
