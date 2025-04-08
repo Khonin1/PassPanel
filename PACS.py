@@ -223,6 +223,9 @@ try:
             print("Waiting for data")
         press = detect_button_press(lambda: button.is_pressed)
         if press == 0:  # Длинное нажатие
+            if bloke_mode == False:
+                GPIO.output(open_pin, GPIO.LOW)
+                light_rele('red')
             bloke_mode = not bloke_mode
             print("Long press")
             print(bloke_mode)
@@ -230,9 +233,12 @@ try:
             send_gpio_signal()
             bloke_mode = False # При нажатие bloke_mode выключается
         elif press == 2:  # Двойное нажатие
-            mode = not mode
-            send_gpio_signal(0.1)
-            
+            if mode:
+                send_gpio_signal(1)
+            else:
+                GPIO.output(open_pin, GPIO.LOW)
+                light_rele('red')
+            mode = not mode    
             print("Mode changed:", "Long" if mode else "Short")
             light_rele('yellow_red')
         time.sleep(0.1)
