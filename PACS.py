@@ -16,11 +16,20 @@ CREATE TABLE IF NOT EXISTS keys (
 )
 ''')
 conn.commit()
-mode = True  # Режим работы Значение True замок всегда закрыт и открывается когда приложили карту
-#              Значение False замок остается открытым до еще одного прикладывания карты
+# Режим работы двери
+mode = True  # Режим работы: True = замок всегда закрыт и открывается когда приложили карту, False замок остается открытым до еще одного прикладывания карты
+bloke_mode = False # Режим работы True = открытие только из внутри, False = можно  открыть с двух сторон
+status_door = False # True когда  дверь открыта, False если закрыта
+
+
+
+# Настройки кнопки
 LONG_PRESS_TIME = 1.5       # Время, после которого считается длинное нажатие
 DOUBLE_PRESS_INTERVAL = 0.3  # Максимальное время между двумя короткими нажатиями
 WAIT_FOR_PRESS_TIMEOUT = 0.1   # Максимальное время ожидания первого нажатия
+
+
+# Контакты Gpio
 RS485_ENABLE_PIN = 4  # RSE TX/RX Control Pin RS485
 open_pin = 17  # Реле замка
 button = Button(22)  # Кнопка открытия
@@ -43,7 +52,7 @@ code_database = {
     b'E\x19`$x\x03\x952\x07\x81\x19B\x03B4`7E\x80': 'Khonin Alexander'}
 
 
-def detect_button_press(read_button_state):
+def detect_button_press(read_button_state): # Различает разные нажатия на кнопку
 
     #  Определяет тип нажатия кнопки:
     #  - 0 — длинное нажатие
@@ -130,13 +139,25 @@ def check_code_in_database(data):  # Сравнивает получиный к�
         return None
 
 
-# Open/Close реле замка (duration = время на которое открывается замок в режиме mode = False)
+# Open/Close реле замка (duration = время на которое открывается замок в режим mode = False)
 def send_gpio_signal(duration=3):
-    print("Open")
-    GPIO.output(open_pin, GPIO.HIGH)
-    time.sleep(duration)
-    GPIO.output(open_pin, GPIO.LOW)
-    print("Close")
+    global status_door
+    if  mode:
+        print("Open")
+        GPIO.output(open_pin, GPIO.HIGH)
+        time.sleep(duration)
+        GPIO.output(open_pin, GPIO.LOW)
+        print("Close")
+    else:
+        if status_door:
+            GPIO.output(open_pin, GPIO.LOW)
+            print("Close")
+            status_door = False
+        else:
+            print("Open")
+            GPIO.output(open_pin, GPIO.HIGH)
+            status_door = True
+        
 
 
 def receive_data():
@@ -156,16 +177,19 @@ def receive_data():
 try:
     while True:
         response = receive_data()
-        if response:
+        if response and bloke_mode == False:
             print(f"Key code: {response}")
             check_master_code(response)
         else:
             print("Waiting for data")
         press = detect_button_press(lambda: button.is_pressed)
         if press == 0:  # Длинное нажатие
+            bloke_mode = not bloke_mode
             print("Long press")
+            print(bloke_mode)
         elif press == 1:  # Одинарное нажатие
             send_gpio_signal()
+            bloke_mode = False # При нажатие bloke_mode выключается
         elif press == 2:  # Двойное нажатие
             mode = not mode
             print("Mode changed:", "Long" if mode else "Short")
