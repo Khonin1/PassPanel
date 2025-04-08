@@ -16,8 +16,10 @@ CREATE TABLE IF NOT EXISTS keys (
 )
 ''')
 conn.commit()
+
+light_status = None # Хранит цвет светодиода
 # Режим работы двери
-mode = True  # Режим работы: True = замок всегда закрыт и открывается когда приложили карту, False замок остается открытым до еще одного прикладывания карты
+mode = True
 bloke_mode = False # Режим работы True = открытие только из внутри, False = можно  открыть с двух сторон
 status_door = False # True когда  дверь открыта, False если закрыта
 
@@ -33,13 +35,18 @@ WAIT_FOR_PRESS_TIMEOUT = 0.1   # Максимальное время ожида�
 RS485_ENABLE_PIN = 4  # RSE TX/RX Control Pin RS485
 open_pin = 17  # Реле замка
 button = Button(22)  # Кнопка открытия
+red_light = 27 # Подсветка красная
+green_light = 5 # Подсветка зеленая
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(RS485_ENABLE_PIN, GPIO.OUT)
 GPIO.setup(open_pin, GPIO.OUT)
+GPIO.setup(red_light, GPIO.OUT)
+GPIO.setup(green_light, GPIO.OUT)
 GPIO.output(RS485_ENABLE_PIN, GPIO.LOW)
 
-ser = serial.Serial(
+# Параметры RS458
+ser = serial.Serial( 
     port='/dev/ttyS0',
     baudrate=9600,
     bytesize=serial.EIGHTBITS,
@@ -144,20 +151,49 @@ def send_gpio_signal(duration=3):
     global status_door
     if  mode:
         print("Open")
+        light_rele('green')
         GPIO.output(open_pin, GPIO.HIGH)
         time.sleep(duration)
         GPIO.output(open_pin, GPIO.LOW)
+        light_rele('red')
         print("Close")
     else:
         if status_door:
             GPIO.output(open_pin, GPIO.LOW)
             print("Close")
             status_door = False
+            light_rele('red')
         else:
             print("Open")
             GPIO.output(open_pin, GPIO.HIGH)
             status_door = True
-        
+            light_rele('green')
+            
+            
+# Управляет реле для изменение цвета подсветки кнопки и считывателя
+def light_rele(color):
+    global light_status
+    if color == 'red':
+        GPIO.output(green_light, GPIO.HIGH)
+        GPIO.output(red_light, GPIO.LOW)
+        light_status = 'red'
+    elif color == 'green':
+        GPIO.output(red_light, GPIO.HIGH)
+        GPIO.output(green_light, GPIO.LOW)
+        light_status == 'green'
+    elif color == 'yellow':
+        GPIO.output(red_light, GPIO.LOW)
+        GPIO.output(green_light, GPIO.LOW)
+        light_status == 'yellow'
+    elif color == 'yellow_red':
+        for _ in range(2):
+                GPIO.output(red_light, GPIO.LOW)
+                GPIO.output(green_light, GPIO.LOW)
+                time.sleep(0.2)
+                GPIO.output(green_light, GPIO.HIGH)
+                GPIO.output(red_light, GPIO.LOW)
+                time.sleep(0.2)
+                light_rele(light_status)
 
 
 def receive_data():
@@ -180,6 +216,9 @@ try:
         if response and bloke_mode == False:
             print(f"Key code: {response}")
             check_master_code(response)
+        elif bloke_mode == True:
+            light_rele('yellow')
+            print("Waiting button")
         else:
             print("Waiting for data")
         press = detect_button_press(lambda: button.is_pressed)
@@ -192,7 +231,10 @@ try:
             bloke_mode = False # При нажатие bloke_mode выключается
         elif press == 2:  # Двойное нажатие
             mode = not mode
+            send_gpio_signal(0.1)
+            
             print("Mode changed:", "Long" if mode else "Short")
+            light_rele('yellow_red')
         time.sleep(0.1)
 
 except KeyboardInterrupt:
