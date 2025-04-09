@@ -6,6 +6,8 @@ import serial
 import time
 import sqlite3
 from gpiozero import Button
+import paho.mqtt.client as mqtt
+
 
 conn = sqlite3.connect('keys_database.db')
 cursor = conn.cursor()
@@ -16,6 +18,13 @@ CREATE TABLE IF NOT EXISTS keys (
 )
 ''')
 conn.commit()
+# Настройки MQTT
+MQTT_BROKER = "localhost"      # или IP адрес брокера
+MQTT_PORT = 1883
+MQTT_USERNAME = "admin"
+MQTT_PASSWORD = "milk"
+# Список топиков на которые надо подписаться
+MQTT_TOPIC = "door/control" 
 
 light_status = None # Хранит цвет светодиода
 # Режим работы двери
@@ -27,7 +36,7 @@ status_door = False # True когда  дверь открыта, False если
 
 # Настройки кнопки
 LONG_PRESS_TIME = 1.5       # Время, после которого считается длинное нажатие
-DOUBLE_PRESS_INTERVAL = 0.3  # Максимальное время между двумя короткими нажатиями
+DOUBLE_PRESS_INTERVAL = 0.3  # Максимальное время между двумя коротким нажатием
 WAIT_FOR_PRESS_TIMEOUT = 0.1   # Максимальное время ожидания первого нажатия
 
 
@@ -180,7 +189,7 @@ def light_rele(color):
     elif color == 'green':
         GPIO.output(red_light, GPIO.HIGH)
         GPIO.output(green_light, GPIO.LOW)
-        light_status == 'green'
+        light_status = 'green'
     elif color == 'yellow':
         GPIO.output(red_light, GPIO.LOW)
         GPIO.output(green_light, GPIO.LOW)
@@ -208,7 +217,33 @@ def receive_data():
         # ser.flushInput()
         # GPIO.output(RS485_ENABLE_PIN,GPIO.HIGH) # Set HIGH to SEND
         return data
+# MQTT Connect
+def on_connect(client, userdata, flags, rc):
+    print("Connected to MQTT Broker" if rc == 0 else f"Failed to connect, return code {rc}")
+    client.subscribe(MQTT_TOPIC)
+    
+#MQTT Открытие замка
+def on_message(client, userdata, msg):
+    global bloke_mode
+    message = msg.payload.decode()
+    print(f"MQTT message received: {message}")
+    
+    if message == "open":
+        send_gpio_signal()
+        bloke_mode = False  # чтобы не блокировало
+    elif message == "toggle_mode":
+        global mode
+        mode = not mode
+        print("Mode changed via MQTT:", "Long" if mode else "Short")
+        light_rele('yellow_red')
+# Создание MQTT клиента
+client = mqtt.Client()
+client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+client.on_connect = on_connect
+client.on_message = on_message
 
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
+client.loop_start()  # Запускаем в фоновом потоке
 
 try:
     while True:
@@ -247,6 +282,11 @@ except KeyboardInterrupt:
     print("Exiting")
 
 finally:
+    client.loop_stop() # Остановка клиента MQTT
+    client.disconnect()
+
+    conn.close() # Остановка SQL
+    
     ser.close()
-    GPIO.cleanup()
+    GPIO.cleanup() # Очистка GPIO
     
