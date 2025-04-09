@@ -8,7 +8,7 @@ import sqlite3
 from gpiozero import Button
 import paho.mqtt.client as mqtt
 
-
+# Создание базы данных
 conn = sqlite3.connect('keys_database.db')
 cursor = conn.cursor()
 cursor.execute('''
@@ -18,41 +18,49 @@ CREATE TABLE IF NOT EXISTS keys (
 )
 ''')
 conn.commit()
+
+
 # Настройки MQTT
 MQTT_BROKER = "localhost"      # или IP адрес брокера
 MQTT_PORT = 1883
 MQTT_USERNAME = "admin"
 MQTT_PASSWORD = "milk"
+
+
 # Список топиков на которые надо подписаться
 MQTT_TOPIC = "door/control" 
 MQTT_TOPIC_STATUS = "door/status"
 
+
 light_status = None # Хранит цвет светодиода
+
 # Режим работы двери
-mode = True # True =  Short Режим с автоматический закрытием, Long Режим который открывает на длительное время
-bloke_mode = False # Режим работы True = открытие только из внутри, False = можно  открыть с двух сторон
-status_door = False # True когда  дверь открыта, False если закрыта
+mode = True           # True =  Short Режим с автоматический закрытием, Long Режим который открывает на длительное время
+bloke_mode = False    # Режим работы True = открытие только из внутри, False = можно  открыть с двух сторон
+status_door = False   # True когда  дверь открыта, False если закрыта
 
 
 
 # Настройки кнопки
-LONG_PRESS_TIME = 1.5       # Время, после которого считается длинное нажатие
-DOUBLE_PRESS_INTERVAL = 0.3  # Максимальное время между двумя коротким нажатием
+LONG_PRESS_TIME = 1.5          # Время, после которого считается длинное нажатием
+DOUBLE_PRESS_INTERVAL = 0.3    # Максимальное время между двумя коротким нажатием
 WAIT_FOR_PRESS_TIMEOUT = 0.1   # Максимальное время ожидания первого нажатия
 
 
 # Контакты Gpio
 RS485_ENABLE_PIN = 4  # RSE TX/RX Control Pin RS485
-open_pin = 17  # Реле замка
-button = Button(22)  # Кнопка открытия
-red_light = 27 # Подсветка красная
-green_light = 5 # Подсветка зеленая
+open_pin = 17         # Реле замка
+button = Button(22)   # Кнопка открытия
+red_light = 27        # Подсветка красная считывателя
+green_light = 5       # Подсветка зеленая считывателя
+buzzer = 6            # Зумер считывателя
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(RS485_ENABLE_PIN, GPIO.OUT)
 GPIO.setup(open_pin, GPIO.OUT)
 GPIO.setup(red_light, GPIO.OUT)
 GPIO.setup(green_light, GPIO.OUT)
+GPIO.setup(buzzer, GPIO.OUT)
 GPIO.output(RS485_ENABLE_PIN, GPIO.LOW)
 
 # Параметры RS458
@@ -64,12 +72,12 @@ ser = serial.Serial(
     stopbits=serial.STOPBITS_ONE,
     timeout=1
 )
-# data
+# Мастер ключ
 code_database = {
     b'E\x19`$x\x03\x952\x07\x81\x19B\x03B4`7E\x80': 'Khonin Alexander'}
 
-
-def detect_button_press(read_button_state): # Различает разные нажатия на кнопку
+# Различает нажатия на кнопку
+def detect_button_press(read_button_state): 
 
     #  Определяет тип нажатия кнопки:
     #  - 0 — длинное нажатие
@@ -132,8 +140,8 @@ def check_master_code(data):  # Проверяет мастер карты из 
         check_code_in_database(data)
         return None
 
-
-def insert_key(key_code, name):  # Добавляет новую карту в базу
+# Добавляет новую карту в базу
+def insert_key(key_code, name):  
     cursor.execute('''
     INSERT OR REPLACE INTO keys (key_code, name) 
     VALUES (?, ?)
@@ -143,7 +151,9 @@ def insert_key(key_code, name):  # Добавляет новую карту в �
     return None
 
 
-def check_code_in_database(data):  # Сравнивает получиный код с таблицей SQL
+
+# Сравнивает получиный код с таблицей SQL
+def check_code_in_database(data):  
     cursor.execute('SELECT name FROM keys WHERE key_code = ?', (data,))
     result = cursor.fetchone()
 
@@ -154,64 +164,74 @@ def check_code_in_database(data):  # Сравнивает получиный к�
     else:
         print("Access denied")
         return None
-
-
-# Open/Close реле замка (duration = время на которое открывается замок в режим mode = False)
-def send_gpio_signal(duration=3):
-    global status_door
-    if  mode:
+    
+    
+# Открыть замок
+def open_signal():
+        global status_door
         print("Open")
         light_rele('green')
         GPIO.output(open_pin, GPIO.HIGH)
         status_door = True
         client.publish(MQTT_TOPIC_STATUS, "opened", retain=True)  # Публикуем статус
         time.sleep(duration)
+
+
+# Закрыть замок
+def close_signal():
+        global status_door
         GPIO.output(open_pin, GPIO.LOW)
         light_rele('red')
         status_door = False
         client.publish(MQTT_TOPIC_STATUS, "closed", retain=True)  # Публикуем статус
         print("Close")
+
+
+# Логика работы режимов
+def send_gpio_signal(duration=3):    
+    global status_door
+    if mode:
+        open_signal()
+        time.sleep(duration)
+        close_signal()
     else:
-        if status_door:
-            GPIO.output(open_pin, GPIO.LOW)
-            print("Close")
-            status_door = False
-            light_rele('red')
-            client.publish(MQTT_TOPIC_STATUS, "closed", retain=True)
-        else:
-            print("Open")
-            GPIO.output(open_pin, GPIO.HIGH)
-            status_door = True
-            light_rele('green')
-            client.publish(MQTT_TOPIC_STATUS, "opened", retain=True)
+        close_signal() if status_door else open_signal
+    
             
-            
-# Управляет реле для изменение цвета подсветки кнопки и считывателя
+# Управляет цветом подсветки
 def light_rele(color):
     global light_status
-    if color == 'red':
+    def red_light():
+        global light_status
         GPIO.output(green_light, GPIO.HIGH)
         GPIO.output(red_light, GPIO.LOW)
         light_status = 'red'
-    elif color == 'green':
+    def green_light():
+        global light_status
         GPIO.output(red_light, GPIO.HIGH)
         GPIO.output(green_light, GPIO.LOW)
-        light_status = 'green'
-    elif color == 'yellow':
+        light_status = 'green'  
+    def yellow_light():
+        global light_status  
         GPIO.output(red_light, GPIO.LOW)
         GPIO.output(green_light, GPIO.LOW)
         light_status == 'yellow'
+    
+    if color == 'red':
+        red_light()
+    elif color == 'green':
+        green_light()
+    elif color == 'yellow':
+        yellow_light()
     elif color == 'yellow_red':
         for _ in range(2):
-                GPIO.output(red_light, GPIO.LOW)
-                GPIO.output(green_light, GPIO.LOW)
+                red_light()
+                time.sleep(0.2) 
+                yellow_light()
                 time.sleep(0.2)
-                GPIO.output(green_light, GPIO.HIGH)
-                GPIO.output(red_light, GPIO.LOW)
-                time.sleep(0.2)
-                light_rele(light_status)
+        light_rele(light_status)
 
-
+# RS485
 def receive_data():
     # GPIO.output(RS485_ENABLE_PIN,GPIO.LOW) # Set LOW to Receive
     if ser.in_waiting > 0:
@@ -224,11 +244,14 @@ def receive_data():
         # ser.flushInput()
         # GPIO.output(RS485_ENABLE_PIN,GPIO.HIGH) # Set HIGH to SEND
         return data
+    
+    
 # MQTT Connect
 def on_connect(client, userdata, flags, rc):
     print("Connected to MQTT Broker" if rc == 0 else f"Failed to connect, return code {rc}")
     client.subscribe(MQTT_TOPIC)
-    
+
+
 #MQTT Открытие замка
 def on_message(client, userdata, msg):
     global bloke_mode
@@ -247,6 +270,9 @@ def on_message(client, userdata, msg):
         mode = True
         print("Mode changed via MQTT: Short")
         light_rele('yellow_red')
+
+#MQTT Добавление новой карты
+
 # Создание MQTT клиента
 client = mqtt.Client()
 client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -275,10 +301,11 @@ try:
             bloke_mode = not bloke_mode
             print("Long press")
             print(bloke_mode)
+            
         elif press == 1:  # Одинарное нажатие
             send_gpio_signal()
             bloke_mode = False # При нажатие bloke_mode выключается
-        # В обработчике двойного нажатия кнопки (где меняется mode):
+            
         elif press == 2:  # Двойное нажатие
             if mode:
                 send_gpio_signal(1)
