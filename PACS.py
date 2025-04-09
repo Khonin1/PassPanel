@@ -30,9 +30,12 @@ MQTT_PASSWORD = "milk"
 # Список топиков на которые надо подписаться
 MQTT_TOPIC = "door/control" 
 MQTT_TOPIC_STATUS = "door/status"
+MQTT_TOPIC_ADD_NAME = "door/add_name"
+
 
 
 light_status = None # Хранит цвет светодиода
+new_name_from_mqtt = None
 
 # Режим работы двери
 mode = True           # True =  Short Режим с автоматический закрытием, Long Режим который открывает на длительное время
@@ -122,8 +125,8 @@ def detect_button_press(read_button_state):
 
     return 1  # Одиночное нажатие
 
-
-def check_master_code(data):  # Проверяет мастер карты из словаря code_database
+# Проверяет мастер карты из словаря code_database
+def check_master_code(data): 
     if data in code_database:
         print("Add new card")
         while True:
@@ -174,7 +177,6 @@ def open_signal():
         GPIO.output(open_pin, GPIO.HIGH)
         status_door = True
         client.publish(MQTT_TOPIC_STATUS, "opened", retain=True)  # Публикуем статус
-        time.sleep(duration)
 
 
 # Закрыть замок
@@ -201,35 +203,45 @@ def send_gpio_signal(duration=3):
 # Управляет цветом подсветки
 def light_rele(color):
     global light_status
-    def red_light():
+    def red_light_def():
         global light_status
         GPIO.output(green_light, GPIO.HIGH)
         GPIO.output(red_light, GPIO.LOW)
         light_status = 'red'
-    def green_light():
+    def green_light_def():
         global light_status
         GPIO.output(red_light, GPIO.HIGH)
         GPIO.output(green_light, GPIO.LOW)
         light_status = 'green'  
-    def yellow_light():
+    def yellow_light_def():
         global light_status  
         GPIO.output(red_light, GPIO.LOW)
         GPIO.output(green_light, GPIO.LOW)
         light_status == 'yellow'
     
     if color == 'red':
-        red_light()
+        red_light_def()
     elif color == 'green':
-        green_light()
+        green_light_def()
     elif color == 'yellow':
-        yellow_light()
+        yellow_light_def()
     elif color == 'yellow_red':
         for _ in range(2):
-                red_light()
+                red_light_def()
                 time.sleep(0.2) 
-                yellow_light()
+                yellow_light_def()
                 time.sleep(0.2)
         light_rele(light_status)
+    elif color == 'buzzer':
+        GPIO.output(buzzer, GPIO.LOW)
+        red_light_def()
+        time.sleep(0.1)
+        yellow_light_def()
+        time.sleep(0.1)
+        green_light_def()
+        time.sleep(0.1)
+        light_rele(light_status)
+        GPIO.output(buzzer, GPIO.HIGH)
 
 # RS485
 def receive_data():
@@ -248,11 +260,18 @@ def receive_data():
     
 # MQTT Connect
 def on_connect(client, userdata, flags, rc):
-    print("Connected to MQTT Broker" if rc == 0 else f"Failed to connect, return code {rc}")
-    client.subscribe(MQTT_TOPIC)
+    if rc == 0:
+        print("Connected to MQTT Broker")
+        client.subscribe([
+            (MQTT_TOPIC, 0),
+            (MQTT_TOPIC_ADD_NAME, 0),
+            (MQTT_TOPIC_STATUS, 0)
+        ])
+    else:
+        print(f"Failed to connect, return code {rc}")
 
 
-#MQTT Открытие замка
+#MQTT Открытие замка, Добавление новой карты
 def on_message(client, userdata, msg):
     global bloke_mode
     global mode
@@ -270,8 +289,24 @@ def on_message(client, userdata, msg):
         mode = True
         print("Mode changed via MQTT: Short")
         light_rele('yellow_red')
-
-#MQTT Добавление новой карты
+    elif msg.topic == MQTT_TOPIC_ADD_NAME: #MQTT Добавление новой карты
+        global new_name_from_mqtt
+        new_name_from_mqtt = message
+        print(f"Name received for new card: {new_name_from_mqtt}")
+        sum = 0
+        while True:
+            key_code = receive_data()
+            if key_code:
+                print(f"New Key code: {key_code}")
+                insert_key(key_code, new_name_from_mqtt)
+                return None
+            else:
+                print("Waiting for new card")
+                light_rele('buzzer')
+                sum += 1
+            if sum > 30:
+                return None
+                
 
 # Создание MQTT клиента
 client = mqtt.Client()
