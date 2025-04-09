@@ -25,10 +25,11 @@ MQTT_USERNAME = "admin"
 MQTT_PASSWORD = "milk"
 # Список топиков на которые надо подписаться
 MQTT_TOPIC = "door/control" 
+MQTT_TOPIC_STATUS = "door/status"
 
 light_status = None # Хранит цвет светодиода
 # Режим работы двери
-mode = True
+mode = True # True =  Short Режим с автоматический закрытием, Long Режим который открывает на длительное время
 bloke_mode = False # Режим работы True = открытие только из внутри, False = можно  открыть с двух сторон
 status_door = False # True когда  дверь открыта, False если закрыта
 
@@ -162,9 +163,13 @@ def send_gpio_signal(duration=3):
         print("Open")
         light_rele('green')
         GPIO.output(open_pin, GPIO.HIGH)
+        status_door = True
+        client.publish(MQTT_TOPIC_STATUS, "opened", retain=True)  # Публикуем статус
         time.sleep(duration)
         GPIO.output(open_pin, GPIO.LOW)
         light_rele('red')
+        status_door = False
+        client.publish(MQTT_TOPIC_STATUS, "closed", retain=True)  # Публикуем статус
         print("Close")
     else:
         if status_door:
@@ -172,11 +177,13 @@ def send_gpio_signal(duration=3):
             print("Close")
             status_door = False
             light_rele('red')
+            client.publish(MQTT_TOPIC_STATUS, "closed", retain=True)
         else:
             print("Open")
             GPIO.output(open_pin, GPIO.HIGH)
             status_door = True
             light_rele('green')
+            client.publish(MQTT_TOPIC_STATUS, "opened", retain=True)
             
             
 # Управляет реле для изменение цвета подсветки кнопки и считывателя
@@ -225,23 +232,27 @@ def on_connect(client, userdata, flags, rc):
 #MQTT Открытие замка
 def on_message(client, userdata, msg):
     global bloke_mode
+    global mode
     message = msg.payload.decode()
     print(f"MQTT message received: {message}")
     
     if message == "open":
         send_gpio_signal()
         bloke_mode = False  # чтобы не блокировало
-    elif message == "toggle_mode":
-        global mode
-        mode = not mode
-        print("Mode changed via MQTT:", "Long" if mode else "Short")
+    elif message == "Long_mode":
+        mode = False
+        print("Mode changed via MQTT: Long")
+        light_rele('yellow_red')
+    elif message == 'Short_mode':
+        mode = True
+        print("Mode changed via MQTT: Short")
         light_rele('yellow_red')
 # Создание MQTT клиента
 client = mqtt.Client()
 client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 client.on_connect = on_connect
 client.on_message = on_message
-
+client.on_disconnect = lambda client, userdata, rc: print(f"Disconnected with result code {rc}") or client.reconnect()
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
 client.loop_start()  # Запускаем в фоновом потоке
 
@@ -267,14 +278,16 @@ try:
         elif press == 1:  # Одинарное нажатие
             send_gpio_signal()
             bloke_mode = False # При нажатие bloke_mode выключается
+        # В обработчике двойного нажатия кнопки (где меняется mode):
         elif press == 2:  # Двойное нажатие
             if mode:
                 send_gpio_signal(1)
             else:
                 GPIO.output(open_pin, GPIO.LOW)
                 light_rele('red')
-            mode = not mode    
-            print("Mode changed:", "Long" if mode else "Short")
+            mode = not mode
+            client.publish(MQTT_TOPIC_STATUS, "mode_changed", retain=True)
+            print("Mode changed:", "Short" if mode else "Long")
             light_rele('yellow_red')
         time.sleep(0.1)
 
