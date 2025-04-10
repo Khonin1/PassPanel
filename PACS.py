@@ -129,6 +129,7 @@ def detect_button_press(read_button_state):
 def check_master_code(data): 
     if data in code_database:
         print("Add new card")
+        counter = 0
         while True:
             key_code = receive_data()
             if key_code:
@@ -138,7 +139,11 @@ def check_master_code(data):
                 return None
             else:
                 print("Waiting for new card")
-                time.sleep(0.5)
+                light_rele('buzzer')
+                time.sleep(0.2)
+                counter += 1
+                if counter > 30:
+                    return None
     else:
         check_code_in_database(data)
         return None
@@ -201,7 +206,7 @@ def send_gpio_signal(duration=3):
         time.sleep(duration)
         close_signal()
     else:
-        close_signal() if status_door else open_signal
+        close_signal() if status_door else open_signal()
     
             
 # Управляет цветом подсветки
@@ -349,15 +354,13 @@ try:
                 bloke_mode = False # При нажатие bloke_mode выключается
                 
             elif press == 2:  # Двойное нажатие
-                if mode:
-                    send_gpio_signal(1)
-                else:
-                    GPIO.output(open_pin, GPIO.LOW)
-                    light_rele('red')
                 mode = not mode
                 client.publish(MQTT_TOPIC_STATUS, "mode_changed", retain=True)
                 print("Mode changed:", "Short" if mode else "Long")
                 light_rele('yellow_red')
+                GPIO.output(open_pin, GPIO.LOW)
+                light_rele('red')
+
         time.sleep(0.1)
 
 except KeyboardInterrupt:
