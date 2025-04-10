@@ -9,16 +9,15 @@ from gpiozero import Button
 import paho.mqtt.client as mqtt
 
 # Создание базы данных
-conn = sqlite3.connect('keys_database.db')
-cursor = conn.cursor()
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS keys (
-    key_code BLOB PRIMARY KEY,
-    name TEXT
-)
-''')
-conn.commit()
-
+with sqlite3.connect('keys_database.db') as conn:
+    cursor = conn.cursor()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS keys (
+        key_code BLOB PRIMARY KEY,
+        name TEXT
+    )
+    ''')
+    conn.commit()
 
 # Настройки MQTT
 MQTT_BROKER = "localhost"      # или IP адрес брокера
@@ -36,6 +35,7 @@ MQTT_TOPIC_ADD_NAME = "door/add_name"
 
 light_status = None # Хранит цвет светодиода
 new_name_from_mqtt = None
+flag_stop_while = False
 
 # Режим работы двери
 mode = True           # True =  Short Режим с автоматический закрытием, Long Режим который открывает на длительное время
@@ -144,21 +144,25 @@ def check_master_code(data):
         return None
 
 # Добавляет новую карту в базу
-def insert_key(key_code, name):  
-    cursor.execute('''
-    INSERT OR REPLACE INTO keys (key_code, name) 
-    VALUES (?, ?)
-    ''', (key_code, name))
-    conn.commit()
-    print("New card add")
-    return None
+def insert_key(key_code, name):
+    print(name)
+    with sqlite3.connect('keys_database.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO keys (key_code, name) 
+            VALUES (?, ?)
+        ''', (key_code, name))
+        conn.commit()
+    print("New card added")
 
 
 
 # Сравнивает получиный код с таблицей SQL
-def check_code_in_database(data):  
-    cursor.execute('SELECT name FROM keys WHERE key_code = ?', (data,))
-    result = cursor.fetchone()
+def check_code_in_database(data):
+    with sqlite3.connect('keys_database.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT name FROM keys WHERE key_code = ?', (data,))
+        result = cursor.fetchone()
 
     if result:
         print(f"Access granted: {result[0]}")
@@ -167,7 +171,7 @@ def check_code_in_database(data):
     else:
         print("Access denied")
         return None
-    
+
     
 # Открыть замок
 def open_signal():
@@ -275,6 +279,7 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     global bloke_mode
     global mode
+    global flag_stop_while
     message = msg.payload.decode()
     print(f"MQTT message received: {message}")
     
@@ -294,20 +299,21 @@ def on_message(client, userdata, msg):
         new_name_from_mqtt = message
         print(f"Name received for new card: {new_name_from_mqtt}")
         sum = 0
+        flag_stop_while = True
         while True:
             key_code = receive_data()
             if key_code:
                 print(f"New Key code: {key_code}")
                 insert_key(key_code, new_name_from_mqtt)
-                return None
+                break
             else:
                 print("Waiting for new card")
                 light_rele('buzzer')
                 sum += 1
             if sum > 30:
-                return None
-                
-
+                break
+        flag_stop_while = False
+        
 # Создание MQTT клиента
 client = mqtt.Client()
 client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -319,38 +325,39 @@ client.loop_start()  # Запускаем в фоновом потоке
 
 try:
     while True:
-        response = receive_data()
-        if response and bloke_mode == False:
-            print(f"Key code: {response}")
-            check_master_code(response)
-        elif bloke_mode == True:
-            light_rele('yellow')
-            print("Waiting button")
-        else:
-            print("Waiting for data")
-        press = detect_button_press(lambda: button.is_pressed)
-        if press == 0:  # Длинное нажатие
-            if bloke_mode == False:
-                GPIO.output(open_pin, GPIO.LOW)
-                light_rele('red')
-            bloke_mode = not bloke_mode
-            print("Long press")
-            print(bloke_mode)
-            
-        elif press == 1:  # Одинарное нажатие
-            send_gpio_signal()
-            bloke_mode = False # При нажатие bloke_mode выключается
-            
-        elif press == 2:  # Двойное нажатие
-            if mode:
-                send_gpio_signal(1)
+        if flag_stop_while == False:
+            response = receive_data()
+            if response and bloke_mode == False:
+                print(f"Key code: {response}")
+                check_master_code(response)
+            elif bloke_mode == True:
+                light_rele('yellow')
+                print("Waiting button")
             else:
-                GPIO.output(open_pin, GPIO.LOW)
-                light_rele('red')
-            mode = not mode
-            client.publish(MQTT_TOPIC_STATUS, "mode_changed", retain=True)
-            print("Mode changed:", "Short" if mode else "Long")
-            light_rele('yellow_red')
+                print("Waiting for data")
+            press = detect_button_press(lambda: button.is_pressed)
+            if press == 0:  # Длинное нажатие
+                if bloke_mode == False:
+                    GPIO.output(open_pin, GPIO.LOW)
+                    light_rele('red')
+                bloke_mode = not bloke_mode
+                print("Long press")
+                print(bloke_mode)
+                
+            elif press == 1:  # Одинарное нажатие
+                send_gpio_signal()
+                bloke_mode = False # При нажатие bloke_mode выключается
+                
+            elif press == 2:  # Двойное нажатие
+                if mode:
+                    send_gpio_signal(1)
+                else:
+                    GPIO.output(open_pin, GPIO.LOW)
+                    light_rele('red')
+                mode = not mode
+                client.publish(MQTT_TOPIC_STATUS, "mode_changed", retain=True)
+                print("Mode changed:", "Short" if mode else "Long")
+                light_rele('yellow_red')
         time.sleep(0.1)
 
 except KeyboardInterrupt:
@@ -359,8 +366,6 @@ except KeyboardInterrupt:
 finally:
     client.loop_stop() # Остановка клиента MQTT
     client.disconnect()
-
-    conn.close() # Остановка SQL
     
     ser.close()
     GPIO.cleanup() # Очистка GPIO
